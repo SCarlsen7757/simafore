@@ -1,0 +1,33 @@
+services:
+  board:
+    image: ghcr.io/scarlsen7757/siemens-board:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    ports: ['${BOARD_PORT:-8081}:8080']
+    environment:
+      TZ: ${TZ:-Europe/Copenhagen}
+      USER_AGENT: ${USER_AGENT:-SiemensBoard/1.0 (+https://github.com/SCarlsen7757/siemens-board)}
+      FEED_URL: ${FEED_URL:-https://cert-portal.siemens.com/productcert/rss/advisories.atom}
+      POLL_INTERVAL_MIN: ${POLL_INTERVAL_MIN:-30}
+      REQUEST_INTERVAL_SECONDS: ${REQUEST_INTERVAL_SECONDS:-60}
+      RATE_LIMIT_COOLDOWN_MIN: ${RATE_LIMIT_COOLDOWN_MIN:-60}
+      POLL_ON_START: ${POLL_ON_START:-true}
+      STALE_AFTER_MIN: ${STALE_AFTER_MIN:-120}
+      PRODUCT_FAMILIES: ${PRODUCT_FAMILIES-SIMATIC,S7-1200,S7-1200 G2,S7-1500,ET 200,TIA Portal,STEP 7,WinCC,WinCC Unified,S7-PLCSIM,SINAMICS,SCALANCE,Industrial Edge}
+      PRODUCT_KEYWORDS: ${PRODUCT_KEYWORDS-PROFINET,PROFIBUS,OPC UA}
+      PRIORITY_MODE: ${PRIORITY_MODE:-recent-severity}
+      RECENT_DAYS: ${RECENT_DAYS:-90}
+      SEVERITY_DAYS: ${SEVERITY_DAYS:-7}
+      HERO_COUNT: ${HERO_COUNT:-6}
+      RAIL_COUNT: ${RAIL_COUNT:-6}
+      ROTATE_SECONDS: ${ROTATE_SECONDS:-25}
+    volumes: ['./data:/data']
+  cloudflared:
+    profiles: [tunnel]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on: [board]

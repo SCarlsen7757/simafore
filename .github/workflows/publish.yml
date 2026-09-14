@@ -1,0 +1,145 @@
+name: Check code and release container image
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: Check code
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      tags: ${{ steps.release.outputs.tags }}
+      node-image: ${{ steps.base.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+          cache: npm
+      - name: Validate version and resolve image tags
+        id: release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        run: node scripts/release-tags.mjs
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - run: npm audit --audit-level=high
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - name: Freeze base image for this run
+        id: base
+        shell: bash
+        run: |
+          digest=$(docker buildx imagetools inspect node:26-alpine --format '{{json .Manifest}}' | jq -r '.digest')
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "image=node:26-alpine@$digest" >> "$GITHUB_OUTPUT"
+
+  minimum-node:
+    name: Check minimum Node (26.8.1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26.8.1
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run build
+      - run: npm audit --audit-level=high
+
+  smoke:
+    name: Smoke and scan (${{ matrix.arch }})
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          build-args: NODE_IMAGE=${{ needs.checks.outputs.node-image }}
+          load: true
+          push: false
+          tags: siemens-board:smoke
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}
+      - name: Smoke test and bind-mount persistence
+        run: node scripts/container-smoke.mjs siemens-board:smoke linux/${{ matrix.arch }}
+      - name: Scan runtime image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.74.0
+          image-ref: siemens-board:smoke
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+          timeout: 10m
+
+  publish:
+    name: Publish checked release to GHCR
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: [checks, minimum-node, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: NODE_IMAGE=${{ needs.checks.outputs.node-image }}
+          push: true
+          tags: ${{ needs.checks.outputs.tags }}
+          cache-from: |
+            type=gha,scope=amd64
+            type=gha,scope=arm64
+          labels: |
+            org.opencontainers.image.title=Siemens Board
+            org.opencontainers.image.description=Unofficial Siemens ProductCERT automation security display
+            org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.revision=${{ github.sha }}
+      - name: Release summary
+        env:
+          RELEASE_TAGS: ${{ needs.checks.outputs.tags }}
+        run: |
+          printf 'Published amd64 and arm64 images:\n\n%s\n' "$RELEASE_TAGS" >> "$GITHUB_STEP_SUMMARY"
