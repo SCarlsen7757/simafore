@@ -5,6 +5,7 @@ import type { Advisory, Details, FeedEntry } from './types.js';
 import { advisoryTitle } from './parse.js';
 import { hash, fingerprint } from './fingerprint.js';
 import { CSAF_LIMITS, jsonBytes } from './budget.js';
+import { advisoryLink } from './urls.js';
 export { hash };
 const titleContent = advisoryTitle;
 const now = () => Math.floor(Date.now() / 1000);
@@ -38,6 +39,7 @@ export class Store {
   }
   private read(data: string): Advisory {
     const item = JSON.parse(data) as Advisory;
+    item.link = advisoryLink(item.id);
     if (item.details && item.details.schemaVersion !== 2) {
       item.details = null;
       item.enrichmentError =
@@ -87,7 +89,7 @@ export class Store {
       .prepare(
         'INSERT INTO advisories(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data',
       )
-      .run(item.id, JSON.stringify({ ...item, schemaVersion: 2 }));
+      .run(item.id, JSON.stringify({ ...item, link: advisoryLink(item.id), schemaVersion: 2 }));
   }
   meta(key: string): string | null {
     const row = this.db.prepare('SELECT value FROM meta WHERE key=?').get(key) as

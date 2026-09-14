@@ -1,6 +1,6 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import type { Details, FeedEntry, Product, Score } from './types.js';
-import { safeLink } from './urls.js';
+import { safeLink, advisoryLink } from './urls.js';
 import { Budget, CSAF_LIMITS, jsonBytes } from './budget.js';
 import { hash } from './fingerprint.js';
 import type { Remedy, RemedyReference } from './types.js';
@@ -59,16 +59,16 @@ export function parseFeed(xml: string): FeedEntry[] {
       .find((l) => l['@_rel'] === 'alternate' || !l['@_rel']);
     const url = safeLink(str(link?.['@_href']));
     const id = (str(e.id) + ' ' + str(e.title) + ' ' + (url ?? ''))
-      .match(/ssa-\d{6}/i)?.[0]
+      .match(/\bssa-\d{6}\b/i)?.[0]
       .toUpperCase();
     const updated = date(e.updated);
-    if (!id || !url || !updated || !str(e.title)) continue;
+    if (!id || !updated || !str(e.title)) continue;
     result.push({
       id,
       feedId: str(e.id),
       title: plain(e.title),
       summary: plain(typeof e.summary === 'object' ? obj(e.summary)['#text'] : e.summary),
-      link: url,
+      link: advisoryLink(id),
       updated,
       published: date(e.published),
     });

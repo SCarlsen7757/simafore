@@ -3,6 +3,7 @@ import type { DisplayAdvisory, Product, Snapshot, Remedy } from './types.js';
 import { productRemedies } from './compact.js';
 import { qrSvg } from './qr.js';
 import { advisoryTitle } from './parse.js';
+import { advisoryLink } from './urls.js';
 export const escapeHtml = (v: string): string =>
   v.replace(
     /[&<>"']/g,
@@ -35,6 +36,7 @@ function productRow(p: Product, definitions: ReadonlyMap<string, Remedy>): strin
   return `<div class="product-row"><div><strong>${escapeHtml(short(p.name, 125))}</strong><span>${escapeHtml(short(version || 'Affected version details unavailable', 110))}</span></div><p>${escapeHtml(short(remedy(p, definitions), 230))}</p></div>`;
 }
 function focus(item: DisplayAdvisory, index: number, config: Config): string {
+  const link = advisoryLink(item.id);
   const definitions = new Map(item.details?.remedies.map((r) => [r.id, r]) ?? []);
   const old = item.materialDate < Date.now() / 1000 - config.recentDays * 86400;
   const pending = !item.details || item.enrichedUpdated !== item.updated;
@@ -54,7 +56,7 @@ function focus(item: DisplayAdvisory, index: number, config: Config): string {
     <div class="advisory-meta"><span>${escapeHtml(item.id)}</span><span class="severity ${item.severity.toLowerCase()}">${item.severity}${item.score ? ` <b>${item.score.value.toFixed(1)}</b>` : ''}</span><span>${item.score ? `CVSS ${escapeHtml(item.score.version)}${item.scoreScope === 'advisory' ? ' · advisory-wide' : ''}` : 'Score unavailable'}</span></div>
     <div class="product-family">${escapeHtml(item.matchedFamilies.slice(0, 3).join(' / '))}</div>
     <h1>${escapeHtml(short(title, 190))}</h1>
-    </div><a class="qr" href="${escapeHtml(item.link)}">${qrSvg(item.link)}<span>Official advisory</span></a></div>
+    </div>${link ? `<a class="qr" href="${escapeHtml(link)}">${qrSvg(link)}<span>Official advisory</span></a>` : ''}</div>
     <p class="summary">${escapeHtml(short(summary, 270))}</p>
     <div class="dates"><span>Published ${date(item.published)}</span><span>${item.details?.published && item.updated > item.details.published ? 'Updated' : 'Source date'} ${date(item.updated)}</span>${old ? '<span class="older">Older advisory</span>' : ''}</div>
     <div class="details-heading"><span>Affected equipment / versions</span><span>Siemens recommendation</span></div>
