@@ -3,15 +3,14 @@ import { Store, hash } from './db.js';
 import { fetchFeed, fetchCsaf, UpstreamCooldownError } from './feed.js';
 import { parseFeed, parseCsaf } from './parse.js';
 import { select, matches } from './selection.js';
-import type { Advisory, DisplayAdvisory, Snapshot } from './types.js';
+import type { DisplayAdvisory, Snapshot } from './types.js';
 const now = () => Math.floor(Date.now() / 1000);
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export class Poller {
-  private items: DisplayAdvisory[] = [];
-  private all: Advisory[] = [];
+  private views = new Map<PriorityMode, { items: DisplayAdvisory[]; revision: string }>();
+  private stats = { pending: 0, failed: 0 };
   private itemCount = 0;
   private day = -1;
-  private contentRevision = '';
   private polling: Promise<void> | null = null;
   private working: Promise<void> | null = null;
   private timer: NodeJS.Timeout | undefined;
@@ -30,11 +29,16 @@ export class Poller {
   }
   refresh(): void {
     const all = this.store.all();
-    this.all = all;
-    this.items = select(all, this.config);
+    const views = new Map<PriorityMode, { items: DisplayAdvisory[]; revision: string }>();
+    const time = now();
+    for (const mode of ['recent-severity', 'newest-first', 'highest-severity'] as const) {
+      const items = select(all, { ...this.config, priorityMode: mode }, time);
+      views.set(mode, { items, revision: this.revision(items, mode) });
+    }
+    this.views = views;
+    this.stats = this.store.queueStats();
     this.itemCount = all.length;
-    this.contentRevision = this.revision(this.items, this.config.priorityMode);
-    this.day = Math.floor(now() / 86400);
+    this.day = Math.floor(time / 86400);
   }
   private revision(items: DisplayAdvisory[], priorityMode: PriorityMode): string {
     return hash({
@@ -52,20 +56,14 @@ export class Poller {
   }
   snapshot(priorityMode: PriorityMode = this.config.priorityMode): Snapshot {
     if (this.day !== Math.floor(now() / 86400)) this.refresh();
-    const items =
-      priorityMode === this.config.priorityMode
-        ? this.items
-        : select(this.all, { ...this.config, priorityMode });
+    const { items, revision } = this.views.get(priorityMode)!;
     const lastSuccess = Number(this.store.meta('last_success')) || null;
-    const stats = this.store.queueStats();
+    const stats = this.stats;
     return {
       items,
       itemCount: this.itemCount,
       matchingCount: items.length,
-      contentRevision:
-        priorityMode === this.config.priorityMode
-          ? this.contentRevision
-          : this.revision(items, priorityMode),
+      contentRevision: revision,
       lastSuccess,
       lastChecked: Number(this.store.meta('last_checked')) || null,
       lastError: this.store.meta('last_error') || null,
