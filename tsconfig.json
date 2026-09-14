@@ -1,0 +1,43 @@
+{
+  "compilerOptions": {
+    // Node 26 is the runtime everywhere: the Docker base, CI, and `engines`.
+    "target": "es2024",
+    // No "dom": fetch/Headers/AbortSignal/Buffer/URL all come from @types/node.
+    // Pulling in dom would hand this server `document` and `window`, which is
+    // exactly the wrong kind of help. public/board.js is not compiled at all.
+    "lib": ["es2024"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "moduleDetection": "force",
+    "types": ["node"],
+
+    // Output mirrors the source tree: src/*.ts -> dist/src/*.js,
+    // test/*.ts -> dist/test/*.js. tsconfig.build.json narrows this to src only
+    // so the published image never contains test code.
+    "rootDir": ".",
+    "outDir": "dist",
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+
+    "verbatimModuleSyntax": true,
+    // The code uses no enums, namespaces or decorators, and this keeps it that way:
+    // every construct must be erasable rather than emitting runtime helpers, so the
+    // compiled output stays a close, readable match for the source.
+    "erasableSyntaxOnly": true,
+    "isolatedModules": true,
+
+    // Required, not hygiene: qrcode-generator's own .d.ts references
+    // CanvasRenderingContext2D, a DOM type this server deliberately does not load.
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+
+    "sourceMap": true,
+    "declaration": false
+  },
+  "include": ["src", "test"]
+}

@@ -1,0 +1,43 @@
+{
+  "name": "siemens-board",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Siemens ProductCERT automation security dashboard for Anthias",
+  "type": "module",
+  "engines": {
+    "node": "\u003e=26.8.1"
+  },
+  "main": "dist/src/server.js",
+  "scripts": {
+    "clean": "node -e \"require(\u0027node:fs\u0027).rmSync(\u0027dist\u0027,{recursive:true,force:true})\"",
+    "prebuild": "npm run clean",
+    "build": "tsc -p tsconfig.build.json",
+    "watch": "tsc -p tsconfig.build.json --watch",
+    "start": "node dist/src/server.js",
+    "dev": "node --watch dist/src/server.js",
+    "poll": "node dist/src/cli-poll.js",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc \u0026\u0026 node --test \"dist/test/**/*.test.js\" \"scripts/*.test.mjs\"",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run typecheck \u0026\u0026 npm run lint \u0026\u0026 npm run format:check \u0026\u0026 npm test",
+    "pretest": "npm run clean"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.11.1",
+    "qrcode-generator": "^2.0.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.4.1",
+    "eslint": "^10.10.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.12.0",
+    "prettier": "^3.9.6",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.70.0"
+  }
+}
