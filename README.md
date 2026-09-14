@@ -19,6 +19,8 @@ docker compose up -d --build
 
 Open **http://localhost:8081/tv**. The board serves immediately and fills in advisory details in the background. Initial history enrichment takes time; selected recent automation advisories are processed first.
 
+The published port binds to **localhost only** by default (`BOARD_BIND_IP=127.0.0.1`). Cloudflared still reaches `http://board:8080` over the Compose network; it does not need a LAN-published port. For deliberate direct LAN access, set `BOARD_BIND_IP` to the host's specific LAN address and restrict reachability with network controls. Use a controlled TLS endpoint for remote screens. Upgrading from an all-interface binding disconnects direct LAN screens until you explicitly configure this option. Recreate containers after changing it.
+
 On Linux, create `data` and assign it to the non-root container user before starting:
 
 ```sh
@@ -101,6 +103,7 @@ After changing `.env`, run `docker compose up -d` to recreate the affected servi
 | Variable                   | Default                                                             |
 | -------------------------- | ------------------------------------------------------------------- |
 | `BOARD_PORT`               | `8081` on the host                                                  |
+| `BOARD_BIND_IP`            | `127.0.0.1`; explicit host interface for published port              |
 | `PORT`                     | `8080` inside the container                                         |
 | `DB_PATH`                  | `/data/board.db` in Docker; `./data/board.db` locally               |
 | `FEED_URL`                 | Siemens ProductCERT Atom feed from the handover                     |
