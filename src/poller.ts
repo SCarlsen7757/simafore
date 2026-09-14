@@ -1,7 +1,8 @@
 import type { Config, PriorityMode } from './config.js';
+import { CsafProcessor } from './processor.js';
 import { Store, hash } from './db.js';
 import { fetchFeed, fetchCsaf, UpstreamCooldownError } from './feed.js';
-import { parseFeed, parseCsaf } from './parse.js';
+import { parseFeed } from './parse.js';
 import { select, matches } from './selection.js';
 import type { DisplayAdvisory, Snapshot } from './types.js';
 const now = () => Math.floor(Date.now() / 1000);
@@ -18,6 +19,9 @@ export class Poller {
   private outboundBusy = false;
   private pollDeferred = false;
   private stopped = true;
+  private shutdownRequested = false;
+  private migration: Promise<void> | undefined;
+  private processor = new CsafProcessor();
   readonly store: Store;
   readonly config: Config;
   private transport: { fetchFeed: typeof fetchFeed; fetchCsaf: typeof fetchCsaf };
@@ -107,6 +111,8 @@ export class Poller {
     console.warn(`[upstream] Requests paused until ${new Date(until * 1000).toISOString()}`);
   }
   private async performPoll(): Promise<void> {
+    await this.migrate();
+    if (this.shutdownRequested) return;
     this.pollDeferred = !this.beginRequest();
     if (this.pollDeferred) return;
     try {
@@ -149,11 +155,14 @@ export class Poller {
     return this.working;
   }
   private async performWork(): Promise<void> {
+    await this.migrate();
+    if (this.shutdownRequested) return;
     const job = this.store.jobs(1)[0];
     if (!job || !this.beginRequest()) return;
     try {
       const raw = await this.transport.fetchCsaf(job.id, this.config);
-      this.store.enrich(job.id, job.updated, parseCsaf(raw, job.id), raw);
+      const processed = await this.processor.process(raw, job.id);
+      this.store.enrich(job.id, job.updated, processed.details, raw, processed.fingerprint);
       this.requestSucceeded();
     } catch (error) {
       this.requestFailed(error);
@@ -163,6 +172,28 @@ export class Poller {
       this.outboundBusy = false;
       this.refresh();
     }
+  }
+  migrate(): Promise<void> {
+    this.migration ??= (async () => {
+      for (const { id } of this.store.legacyRows()) {
+        if (this.shutdownRequested) break;
+        if (this.store.meta('migration_error:' + id)) continue;
+        try {
+          const processed = await this.processor.process(
+            this.store.legacyDetails(id),
+            id,
+            'legacy',
+          );
+          this.store.migrate(id, processed.details, processed.fingerprint);
+          console.log(`[migration] ${id} converted to schema 2`);
+        } catch (error) {
+          this.store.migrationFailed(id, message(error));
+          console.error(`[migration] ${id}: ${message(error)}`);
+        }
+        this.refresh();
+      }
+    })();
+    return this.migration;
   }
   start(): void {
     if (!this.stopped) return;
@@ -203,8 +234,10 @@ export class Poller {
   }
   async stop(): Promise<void> {
     this.stopped = true;
+    this.shutdownRequested = true;
     clearTimeout(this.timer);
     clearTimeout(this.workerTimer);
-    await Promise.all([this.polling, this.working]);
+    await Promise.all([this.polling, this.working, this.migration]);
+    this.processor.close();
   }
 }

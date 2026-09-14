@@ -1,5 +1,6 @@
 import type { Config } from './config.js';
-import type { DisplayAdvisory, Product, Snapshot } from './types.js';
+import type { DisplayAdvisory, Product, Snapshot, Remedy } from './types.js';
+import { productRemedies } from './compact.js';
 import { qrSvg } from './qr.js';
 import { advisoryTitle } from './parse.js';
 export const escapeHtml = (v: string): string =>
@@ -17,10 +18,11 @@ export const modeLabel = (mode: string): string =>
     'newest-first': 'Newest changes first',
     'highest-severity': 'Highest severity first',
   })[mode] ?? mode;
-function remedy(p: Product): string {
-  const fixes = p.remedies.filter((r) => r.category === 'vendor_fix');
-  const noFix = p.remedies.filter((r) => r.category === 'none_available');
-  const mitigations = p.remedies.filter(
+function remedy(p: Product, definitions: ReadonlyMap<string, Remedy>): string {
+  const remedies = productRemedies(p, definitions);
+  const fixes = remedies.filter((r) => r.category === 'vendor_fix');
+  const noFix = remedies.filter((r) => r.category === 'none_available');
+  const mitigations = remedies.filter(
     (r) => r.category === 'mitigation' || r.category === 'workaround',
   );
   const text =
@@ -28,11 +30,12 @@ function remedy(p: Product): string {
     [...(fixes.length ? fixes : noFix), ...mitigations].map((r) => r.text).join(' • ');
   return text.trim() || 'Remediation details unavailable';
 }
-function productRow(p: Product): string {
+function productRow(p: Product, definitions: ReadonlyMap<string, Remedy>): string {
   const version = p.version.startsWith(p.name) ? p.version.slice(p.name.length).trim() : p.version;
-  return `<div class="product-row"><div><strong>${escapeHtml(short(p.name, 125))}</strong><span>${escapeHtml(short(version || 'Affected version details unavailable', 110))}</span></div><p>${escapeHtml(short(remedy(p), 230))}</p></div>`;
+  return `<div class="product-row"><div><strong>${escapeHtml(short(p.name, 125))}</strong><span>${escapeHtml(short(version || 'Affected version details unavailable', 110))}</span></div><p>${escapeHtml(short(remedy(p, definitions), 230))}</p></div>`;
 }
 function focus(item: DisplayAdvisory, index: number, config: Config): string {
+  const definitions = new Map(item.details?.remedies.map((r) => [r.id, r]) ?? []);
   const old = item.materialDate < Date.now() / 1000 - config.recentDays * 86400;
   const pending = !item.details || item.enrichedUpdated !== item.updated;
   const title = advisoryTitle(item.title);
@@ -43,7 +46,7 @@ function focus(item: DisplayAdvisory, index: number, config: Config): string {
   const rowCount =
     title.length > 110 ||
     summary.length > 250 ||
-    item.matchedProducts.some((p) => p.name.length > 75 || remedy(p).length > 160)
+    item.matchedProducts.some((p) => p.name.length > 75 || remedy(p, definitions).length > 160)
       ? 3
       : 4;
   return `<article class="focus" data-focus="${index}" ${index ? 'hidden' : ''}>
@@ -55,7 +58,14 @@ function focus(item: DisplayAdvisory, index: number, config: Config): string {
     <p class="summary">${escapeHtml(short(summary, 270))}</p>
     <div class="dates"><span>Published ${date(item.published)}</span><span>${item.details?.published && item.updated > item.details.published ? 'Updated' : 'Source date'} ${date(item.updated)}</span>${old ? '<span class="older">Older advisory</span>' : ''}</div>
     <div class="details-heading"><span>Affected equipment / versions</span><span>Siemens recommendation</span></div>
-    <div class="products">${item.matchedProducts.length ? item.matchedProducts.slice(0, rowCount).map(productRow).join('') : `<div class="unavailable">${item.provisional ? 'Product match awaiting confirmation from advisory details.' : 'Detailed affected versions unavailable.'}</div>`}</div>
+    <div class="products">${
+      item.matchedProducts.length
+        ? item.matchedProducts
+            .slice(0, rowCount)
+            .map((p) => productRow(p, definitions))
+            .join('')
+        : `<div class="unavailable">${item.provisional ? 'Product match awaiting confirmation from advisory details.' : 'Detailed affected versions unavailable.'}</div>`
+    }</div>
     <div class="focus-bottom"><div class="revision"><p>${item.matchedProducts.length > rowCount ? `+${item.matchedProducts.length - rowCount} additional product/version entries. ` : ''}Excerpts shown; full details in advisory.</p>${pending ? `<p class="warning">${item.details ? 'Previous revision details; update pending.' : 'Detailed advisory information pending.'}${item.enrichmentError ? ' Retrieval failed; retry scheduled.' : ''}</p>` : ''}${!pending && item.details?.revisionSummary && !/^publication date$/i.test(item.details.revisionSummary) ? `<p class="change">${escapeHtml(short(item.details.revisionSummary, 130))}</p>` : ''}<span>${item.details ? `${item.details.cves.length} CVE${item.details.cves.length === 1 ? '' : 's'}` : 'CVE details pending'}</span></div></div>
   </article>`;
 }

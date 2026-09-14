@@ -90,6 +90,7 @@ export function createBoardServer(poller: Poller, settings: Config = config) {
             ? ''
             : JSON.stringify({
                 ...snapshot,
+                schemaVersion: 2,
                 source: {
                   title: 'Siemens ProductCERT security advisories',
                   link: 'https://www.siemens.com/cert/advisories',

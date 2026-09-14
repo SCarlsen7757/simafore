@@ -14,9 +14,13 @@ export interface Score {
   products: string[];
 }
 export interface Remedy {
+  id: string;
   category: string;
   text: string;
   url: string | null;
+}
+export interface RemedyReference {
+  remedyId: string;
   cves: string[];
 }
 export interface Product {
@@ -25,9 +29,11 @@ export interface Product {
   version: string;
   status: string[];
   cves: string[];
-  remedies: Remedy[];
+  remedies: RemedyReference[];
 }
 export interface Details {
+  schemaVersion: 2;
+  remedies: Remedy[];
   title: string;
   summary: string;
   published: number | null;
@@ -40,6 +46,8 @@ export interface Details {
   cves: string[];
 }
 export interface Advisory extends FeedEntry {
+  schemaVersion?: 2;
+  detailsFingerprint?: string;
   firstSeen: number;
   materialDate: number;
   details: Details | null;

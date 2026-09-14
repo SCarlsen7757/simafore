@@ -97,8 +97,10 @@ test('HTTP contract, root reservation, empty health, unmatched health, escaping,
     assert.ok(!html.includes('<script>alert'));
     assert.match(html, /&lt;script&gt;/);
     const json = (await (await fetch(base + '/api/advisories?limit=999')).json()) as {
+      schemaVersion: number;
       items: unknown[];
     };
+    assert.equal(json.schemaVersion, 2);
     assert.equal(json.items.length, 100);
     assert.equal((await fetch(base + '/%')).status, 400);
     assert.equal((await fetch(base + '/tv', { method: 'POST' })).status, 405);

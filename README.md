@@ -103,7 +103,7 @@ After changing `.env`, run `docker compose up -d` to recreate the affected servi
 | Variable                   | Default                                                             |
 | -------------------------- | ------------------------------------------------------------------- |
 | `BOARD_PORT`               | `8081` on the host                                                  |
-| `BOARD_BIND_IP`            | `127.0.0.1`; explicit host interface for published port              |
+| `BOARD_BIND_IP`            | `127.0.0.1`; explicit host interface for published port             |
 | `PORT`                     | `8080` inside the container                                         |
 | `DB_PATH`                  | `/data/board.db` in Docker; `./data/board.db` locally               |
 | `FEED_URL`                 | Siemens ProductCERT Atom feed from the handover                     |
@@ -150,6 +150,14 @@ Container recreation preserves `./data`. For a consistent backup, stop the board
 | `/`                       | Temporary HTTP 302 redirect to `/tv`                                                                                                                                  |
 | `/api/advisories?limit=N` | Selected advisories with structured product/remediation details, source, priority, content revision, and separate feed/enrichment freshness. Default 25, maximum 100. |
 | `/healthz`                | 200 after successful ingestion, including zero matches; 503 before usable data exists. Cached data stays healthy during upstream outages; inspect `stale`.            |
+
+## Large advisories and schema 2 upgrade
+
+The API now returns `schemaVersion: 2`. Each advisory's `details.remedies` contains shared `{ id, category, text, url }` definitions. Product `remedies` contain `{ remedyId, cves }` references into that advisory's definitions. CVE scope stays specific to the product/reference. This is a breaking pre-v1 API change; the bundled dashboard understands the compact format.
+
+CSAF parsing and material fingerprints run in one reusable worker, with one active job. Limits are 20 MiB downloaded text, 16 MiB normalized advisory output, 250,000 product/remediation relationships, two million traversal/reference operations, 64 KiB remediation text, five seconds per job, and 128 MiB worker old-generation heap (plus 16 MiB young generation). These are processing limits, not a cap on the whole Node process. Repeated scopes are deduplicated; oversized or failed jobs retain previous successful details and use the normal retry queue. No security guidance is silently truncated to fit the remediation text budget.
+
+Before upgrading, stop the board and back up the entire `data` directory. Existing cached details migrate locally, one advisory at a time, before upstream polling resumes. Converted records become available as migration progresses; remaining records show provisional feed information. Progress and errors appear under `[migration]` in logs. Failed legacy records remain in `legacy_archive` and are queued for retrieval. Restart resumes remaining conversions. Migration preserves publication and material-change dates. Rollback requires both the previous image and the pre-upgrade data backup.
 
 ## Development and checks
 
