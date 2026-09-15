@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { Store } from '../src/db.js';
 import { loadConfig } from '../src/config.js';
 import { parseFeed, parseCsaf, advisoryTitle } from '../src/parse.js';
+import { productRemedies } from '../src/compact.js';
 import { classify, select } from '../src/selection.js';
 import { advisory, atom, csaf, timestamp } from './fixture.js';
 
@@ -61,10 +62,9 @@ test('partial fixes keep CVE-specific remediation and missing optional fields su
   });
   const details = parseCsaf(raw, 'SSA-123456');
   const p = details.products.find((p) => p.id === 'affected')!;
-  assert.deepEqual(p.remedies.find((r) => r.category === 'vendor_fix')?.cves, ['CVE-2026-12345']);
-  assert.deepEqual(p.remedies.find((r) => r.category === 'none_available')?.cves, [
-    'CVE-2026-99999',
-  ]);
+  const remedies = productRemedies(p, new Map(details.remedies.map((r) => [r.id, r])));
+  assert.deepEqual(remedies.find((r) => r.category === 'vendor_fix')?.cves, ['CVE-2026-12345']);
+  assert.deepEqual(remedies.find((r) => r.category === 'none_available')?.cves, ['CVE-2026-99999']);
   assert.deepEqual(parseCsaf({ document: raw.document }, 'SSA-123456').products, []);
 });
 test('priority windows, severity ordering, other modes, aliases and configuration validation', () => {
@@ -202,8 +202,7 @@ test('revision labels and reordered CSAF lists do not resurface an advisory; cha
     store.enrich(entry.id, timestamp + 60, reordered, {});
     assert.equal(store.get(entry.id)?.materialDate, timestamp);
     const changed = structuredClone(reordered);
-    changed.products.find((p) => p.id === 'affected')!.remedies[0]!.text =
-      'Update to V3.2 or later.';
+    changed.remedies[0]!.text = 'Update to V3.2 or later.';
     changed.updated = timestamp + 120;
     store.ingest([{ ...entry, updated: timestamp + 120 }], () => true);
     store.enrich(entry.id, timestamp + 120, changed, {});
@@ -227,8 +226,5 @@ test('unknown remediation group never becomes an advisory-wide fix; version comp
     0,
   );
   raw.vulnerabilities[0]!.remediations[0]!.group_ids = ['g1'];
-  assert.match(
-    parseCsaf(raw, 'SSA-123456').products.find((p) => p.id === 'affected')!.remedies[0]!.text,
-    /< V3.1 and > V2.0/,
-  );
+  assert.match(parseCsaf(raw, 'SSA-123456').remedies[0]!.text, /< V3.1 and > V2.0/);
 });

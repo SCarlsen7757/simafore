@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { loadConfig } from '../dist/src/config.js';
 import { renderBoard } from '../dist/src/render.js';
 import { parseCsaf } from '../dist/src/parse.js';
+import { compactLegacy, productRemedies } from '../dist/src/compact.js';
 import { select } from '../dist/src/selection.js';
 import { advisory, csaf, timestamp } from '../dist/test/fixture.js';
 const config = loadConfig({ ROTATE_SECONDS: '5', POLL_ON_START: 'false' });
@@ -38,8 +39,13 @@ function snapshot(scene) {
     items = items.map((i) => ({ ...i, details: null, enrichmentError: 'CSAF HTTP 503' }));
   if (scene === 'long' || scene === 'partial')
     items = items.map((i) => {
+      const definitions = new Map(i.details.remedies.map((r) => [r.id, r]));
+      const legacyProducts = i.details.products.map((p) => ({
+        ...p,
+        remedies: productRemedies(p, definitions),
+      }));
       const products = Array.from({ length: 8 }, (_, index) => ({
-        ...i.details.products[0],
+        ...legacyProducts[0],
         id: 'p' + index,
         name: 'SIMATIC S7-1500 CPU 1518F-4 PN/DP MFP including SIPLUS variant (6ES7518-4FX00-1AC0)',
         version: 'All versions >= V3.1.6 and < V3.1.7',
@@ -63,12 +69,12 @@ function snapshot(scene) {
         title:
           i.id +
           ': Multiple vulnerabilities in the additional GNU/Linux subsystem of SIMATIC S7-1500 CPU 1518(F)-4 PN/DP MFP industrial controllers and related SIPLUS variants',
-        details: {
+        details: compactLegacy({
           ...i.details,
           products,
           revisionSummary:
             'Added 79 CVEs; added fixes for selected vulnerabilities. Additional countermeasures remain applicable to products without fixes.',
-        },
+        }),
       };
     });
   const selected = select(items, config);

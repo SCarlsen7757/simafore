@@ -53,7 +53,13 @@ try {
     `
     import assert from 'node:assert/strict';
     import { Store } from '/app/dist/src/db.js';
+    import { CsafProcessor } from '/app/dist/src/processor.js';
     assert.equal(process.getuid(),1000);
+    const processor = new CsafProcessor();
+    try {
+      const result = await processor.process(JSON.stringify({document:{csaf_version:'2.0',tracking:{id:'SSA-123456',current_release_date:'2026-09-14T00:00:00Z'}}}), 'SSA-123456');
+      assert.equal(result.details.schemaVersion,2);
+    } finally { processor.close(); }
     const s=new Store('/data/board.db');
     s.ingest([{id:'SSA-123456',feedId:'test',title:'SIMATIC smoke fixture',summary:'Synthetic',link:'https://cert-portal.siemens.com/productcert/html/ssa-123456.html',updated:1800000000,published:null}],()=>true);
     s.db.exec('DELETE FROM queue');s.setMeta({last_success:Math.floor(Date.now()/1000)});s.close();
@@ -64,6 +70,7 @@ try {
   await start();
   assert.equal((await fetch(base + '/healthz')).status, 200);
   const api = await (await fetch(base + '/api/advisories')).json();
+  assert.equal(api.schemaVersion, 2);
   assert.equal(api.itemCount, 1);
   assert.equal(api.items[0].id, 'SSA-123456');
   assert.match(api.contentRevision, /^[a-f0-9]{64}$/);

@@ -19,6 +19,8 @@ docker compose up -d --build
 
 Open **http://localhost:8081/tv**. The board serves immediately and fills in advisory details in the background. Initial history enrichment takes time; selected recent automation advisories are processed first.
 
+The published port binds to **localhost only** by default (`BOARD_BIND_IP=127.0.0.1`). Cloudflared still reaches `http://board:8080` over the Compose network; it does not need a LAN-published port. For deliberate direct LAN access, set `BOARD_BIND_IP` to the host's specific LAN address and restrict reachability with network controls. Use a controlled TLS endpoint for remote screens. Upgrading from an all-interface binding disconnects direct LAN screens until you explicitly configure this option. Recreate containers after changing it.
+
 On Linux, create `data` and assign it to the non-root container user before starting:
 
 ```sh
@@ -101,6 +103,7 @@ After changing `.env`, run `docker compose up -d` to recreate the affected servi
 | Variable                   | Default                                                             |
 | -------------------------- | ------------------------------------------------------------------- |
 | `BOARD_PORT`               | `8081` on the host                                                  |
+| `BOARD_BIND_IP`            | `127.0.0.1`; explicit host interface for published port             |
 | `PORT`                     | `8080` inside the container                                         |
 | `DB_PATH`                  | `/data/board.db` in Docker; `./data/board.db` locally               |
 | `FEED_URL`                 | Siemens ProductCERT Atom feed from the handover                     |
@@ -129,6 +132,8 @@ SQLite retains one latest record per SSA identifier and the latest successful ra
 
 Downloads have 30-second timeouts and decompressed byte limits (10 MiB Atom / 20 MiB CSAF). Atom entities/DTDs are rejected. CSAF retrieval uses fixed Siemens URLs derived from validated SSA IDs and refuses redirects. Feed and detail downloads share a single request slot, with at least 60 seconds between request starts. This is a conservative application default, not a published Siemens rate limit. Full historical enrichment can take many hours; recent automation matches are processed first.
 
+`FEED_URL` must use HTTPS without embedded credentials; HTTP is not enabled for production or tests (tests inject transports). Primary advisory links and QR codes are derived from validated SSA IDs on `cert-portal.siemens.com`, including links loaded from older cached records. Feed-supplied destinations cannot override them. Remediation references may still point to other vendor domains.
+
 HTTP 403/429, HTTP 503 with `Retry-After`, and recognizable HTML rate-limit pages pause all Siemens fetching, not just one advisory. The cooldown starts at 60 minutes and doubles after repeated blocking, up to a day; a longer `Retry-After` is always respected. Cooldown and request spacing persist across restarts. A successful request resets escalation. Ordinary failed jobs retain their individual retry backoff. Retries run independently of whether Atom changed. The cached dashboard stays available, and `/healthz` and `/api/advisories` expose `upstreamCooldownUntil` for diagnosis. Restarting the container does not bypass the cooldown.
 
 The footer distinguishes stale upstream feed data from loss of connection to the board server. Previous successful details remain available during enrichment failures and are labeled when a newer source revision is pending. Browser updates occur at a full rotation boundary, preserving a complete viewing cycle. An unavailable feed does not imply that equipment is safe.
@@ -147,6 +152,14 @@ Container recreation preserves `./data`. For a consistent backup, stop the board
 | `/`                       | Temporary HTTP 302 redirect to `/tv`                                                                                                                                  |
 | `/api/advisories?limit=N` | Selected advisories with structured product/remediation details, source, priority, content revision, and separate feed/enrichment freshness. Default 25, maximum 100. |
 | `/healthz`                | 200 after successful ingestion, including zero matches; 503 before usable data exists. Cached data stays healthy during upstream outages; inspect `stale`.            |
+
+## Large advisories and schema 2 upgrade
+
+The API now returns `schemaVersion: 2`. Each advisory's `details.remedies` contains shared `{ id, category, text, url }` definitions. Product `remedies` contain `{ remedyId, cves }` references into that advisory's definitions. CVE scope stays specific to the product/reference. This is a breaking pre-v1 API change; the bundled dashboard understands the compact format.
+
+CSAF parsing and material fingerprints run in one reusable worker, with one active job. Limits are 20 MiB downloaded text, 16 MiB normalized advisory output, 250,000 product/remediation relationships, two million traversal/reference operations, 64 KiB remediation text, five seconds per job, and 128 MiB worker old-generation heap (plus 16 MiB young generation). These are processing limits, not a cap on the whole Node process. Repeated scopes are deduplicated; oversized or failed jobs retain previous successful details and use the normal retry queue. No security guidance is silently truncated to fit the remediation text budget.
+
+Before upgrading, stop the board and back up the entire `data` directory. Existing cached details migrate locally, one advisory at a time, before upstream polling resumes. Converted records become available as migration progresses; remaining records show provisional feed information. Progress and errors appear under `[migration]` in logs. Failed legacy records remain in `legacy_archive` and are queued for retrieval. Restart resumes remaining conversions. Migration preserves publication and material-change dates. Rollback requires both the previous image and the pre-upgrade data backup.
 
 ## Development and checks
 

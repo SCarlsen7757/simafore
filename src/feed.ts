@@ -100,7 +100,7 @@ export async function fetchFeed(config: Config, etag: string | null, modified: s
     modified: res.headers.get('last-modified') ?? '',
   };
 }
-export async function fetchCsaf(id: string, config: Config): Promise<unknown> {
+export async function fetchCsaf(id: string, config: Config): Promise<string> {
   if (!/^SSA-\d{6}$/.test(id)) throw new Error('Invalid advisory ID');
   const res = await fetch(
     `https://cert-portal.siemens.com/productcert/csaf/${id.toLowerCase()}.json`,
@@ -110,5 +110,5 @@ export async function fetchCsaf(id: string, config: Config): Promise<unknown> {
       signal: AbortSignal.timeout(30000),
     },
   );
-  return JSON.parse(await checkedBody(res, 20 * 1024 * 1024)) as unknown;
+  return checkedBody(res, 20 * 1024 * 1024);
 }

@@ -1,28 +1,12 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { createHash } from 'node:crypto';
 import type { Advisory, Details, FeedEntry } from './types.js';
 import { advisoryTitle } from './parse.js';
-
-export const hash = (value: unknown): string =>
-  createHash('sha256').update(JSON.stringify(value)).digest('hex');
-// Array ordering and whitespace are not advisory changes. Product/remediation
-// relations remain nested in the normalized value, so scope changes still count.
-function canonical(value: unknown): unknown {
-  if (typeof value === 'string') return value.replace(/\s+/g, ' ').trim();
-  if (Array.isArray(value))
-    return (value as unknown[])
-      .map(canonical)
-      .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  if (value && typeof value === 'object')
-    return Object.fromEntries(
-      Object.entries(value)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([k, v]) => [k, canonical(v)]),
-    );
-  return value;
-}
+import { hash, fingerprint } from './fingerprint.js';
+import { CSAF_LIMITS, jsonBytes } from './budget.js';
+import { advisoryLink } from './urls.js';
+export { hash };
 const titleContent = advisoryTitle;
 const now = () => Math.floor(Date.now() / 1000);
 interface Row {
@@ -37,27 +21,75 @@ export class Store {
       CREATE TABLE IF NOT EXISTS advisories (id TEXT PRIMARY KEY, data TEXT NOT NULL, raw_csaf TEXT);
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS queue (id TEXT PRIMARY KEY, updated INTEGER NOT NULL, priority INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL DEFAULT 0);
-      PRAGMA user_version=1;`);
+      CREATE TABLE IF NOT EXISTS legacy_archive (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+      PRAGMA user_version=2;`);
   }
   close(): void {
     this.db.close();
   }
   all(): Advisory[] {
-    return (this.db.prepare('SELECT data FROM advisories').all() as unknown as Row[]).map(
-      (r) => JSON.parse(r.data) as Advisory,
+    return (this.db.prepare('SELECT data FROM advisories').all() as unknown as Row[]).map((r) =>
+      this.read(r.data),
     );
   }
   get(id: string): Advisory | null {
     const row = this.db.prepare('SELECT data FROM advisories WHERE id=?').get(id) as unknown as
       Row | undefined;
-    return row ? (JSON.parse(row.data) as Advisory) : null;
+    return row ? this.read(row.data) : null;
+  }
+  private read(data: string): Advisory {
+    const item = JSON.parse(data) as Advisory;
+    item.link = advisoryLink(item.id);
+    if (item.details && item.details.schemaVersion !== 2) {
+      item.details = null;
+      item.enrichmentError =
+        this.meta('migration_error:' + item.id) || 'Cached details migration pending';
+    }
+    return item;
+  }
+  legacyRows(): { id: string }[] {
+    return this.db
+      .prepare(
+        "SELECT id FROM advisories WHERE json_extract(data,'$.details') IS NOT NULL AND coalesce(json_extract(data,'$.details.schemaVersion'),0) != 2",
+      )
+      .all() as unknown as { id: string }[];
+  }
+  legacyDetails(id: string): string {
+    const row = this.db
+      .prepare("SELECT json_extract(data,'$.details') AS data FROM advisories WHERE id=?")
+      .get(id) as unknown as Row;
+    return row.data;
+  }
+  migrate(id: string, details: Details, detailsFingerprint: string): void {
+    const row = this.db.prepare('SELECT data FROM advisories WHERE id=?').get(id) as
+      Row | undefined;
+    if (!row) return;
+    const item = {
+      ...(JSON.parse(row.data) as Advisory),
+      details,
+      detailsFingerprint,
+      schemaVersion: 2 as const,
+    };
+    jsonBytes(item);
+    this.save(item);
+  }
+  migrationFailed(id: string, error: string): void {
+    this.db
+      .prepare('INSERT OR IGNORE INTO legacy_archive SELECT id,data FROM advisories WHERE id=?')
+      .run(id);
+    this.setMeta({ ['migration_error:' + id]: error });
+    const item = this.get(id);
+    if (item)
+      this.db
+        .prepare('INSERT OR IGNORE INTO queue(id,updated,priority) VALUES (?,?,1)')
+        .run(id, item.updated);
   }
   save(item: Advisory): void {
     this.db
       .prepare(
         'INSERT INTO advisories(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data',
       )
-      .run(item.id, JSON.stringify(item));
+      .run(item.id, JSON.stringify({ ...item, link: advisoryLink(item.id), schemaVersion: 2 }));
   }
   meta(key: string): string | null {
     const row = this.db.prepare('SELECT value FROM meta WHERE key=?').get(key) as
@@ -89,6 +121,7 @@ export class Store {
               : old.materialDate
             : entry.updated,
           details: old?.details ?? null,
+          ...(old?.detailsFingerprint ? { detailsFingerprint: old.detailsFingerprint } : {}),
           enrichedAt: old?.enrichedAt ?? null,
           enrichedUpdated: old?.enrichedUpdated ?? null,
           enrichmentError: old?.enrichmentError ?? null,
@@ -115,33 +148,36 @@ export class Store {
       )
       .all(time, limit) as unknown as { id: string; updated: number; attempts: number }[];
   }
-  enrich(id: string, feedUpdated: number, details: Details, raw: unknown): void {
+  enrich(
+    id: string,
+    feedUpdated: number,
+    details: Details,
+    raw: unknown,
+    preparedFingerprint?: string,
+  ): void {
     const item = this.get(id);
     if (!item || item.updated !== feedUpdated) return;
     if (details.updated < feedUpdated) throw new Error('CSAF has not caught up with Atom revision');
-    const fingerprint = (d: Details) =>
-      hash(
-        canonical({
-          title: d.title,
-          summary: d.summary,
-          products: d.products,
-          scores: d.scores,
-          aggregateSeverity: d.aggregateSeverity,
-          cves: d.cves,
-        }),
-      );
     // First enrichment establishes the baseline; retries do not create an update event.
-    if (item.details && fingerprint(item.details) !== fingerprint(details))
+    const nextFingerprint = preparedFingerprint ?? fingerprint(details);
+    if (item.details && (item.detailsFingerprint ?? fingerprint(item.details)) !== nextFingerprint)
       item.materialDate = Math.max(item.materialDate, details.updated);
     item.details = details;
+    item.detailsFingerprint = nextFingerprint;
+    item.schemaVersion = 2;
     item.published = details.published ?? item.published;
     item.enrichedAt = now();
     item.enrichedUpdated = feedUpdated;
     item.enrichmentError = null;
+    jsonBytes(item);
+    const serialized = JSON.stringify(item);
+    const rawText = typeof raw === 'string' ? raw : JSON.stringify(raw);
+    if (Buffer.byteLength(rawText) > CSAF_LIMITS.inputBytes)
+      throw new Error('CSAF input budget exceeded');
     this.db.exec('BEGIN');
     try {
-      this.save(item);
-      this.db.prepare('UPDATE advisories SET raw_csaf=? WHERE id=?').run(JSON.stringify(raw), id);
+      this.db.prepare('UPDATE advisories SET data=? WHERE id=?').run(serialized, id);
+      this.db.prepare('UPDATE advisories SET raw_csaf=? WHERE id=?').run(rawText, id);
       this.db.prepare('DELETE FROM queue WHERE id=? AND updated=?').run(id, feedUpdated);
       this.db.exec('COMMIT');
     } catch (error) {

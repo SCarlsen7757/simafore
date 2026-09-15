@@ -1,6 +1,9 @@
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import type { Details, FeedEntry, Product, Score } from './types.js';
-import { safeLink } from './urls.js';
+import { safeLink, advisoryLink } from './urls.js';
+import { Budget, CSAF_LIMITS, jsonBytes } from './budget.js';
+import { hash } from './fingerprint.js';
+import type { Remedy, RemedyReference } from './types.js';
 
 export function obj(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -56,16 +59,16 @@ export function parseFeed(xml: string): FeedEntry[] {
       .find((l) => l['@_rel'] === 'alternate' || !l['@_rel']);
     const url = safeLink(str(link?.['@_href']));
     const id = (str(e.id) + ' ' + str(e.title) + ' ' + (url ?? ''))
-      .match(/ssa-\d{6}/i)?.[0]
+      .match(/\bssa-\d{6}\b/i)?.[0]
       .toUpperCase();
     const updated = date(e.updated);
-    if (!id || !url || !updated || !str(e.title)) continue;
+    if (!id || !updated || !str(e.title)) continue;
     result.push({
       id,
       feedId: str(e.id),
       title: plain(e.title),
       summary: plain(typeof e.summary === 'object' ? obj(e.summary)['#text'] : e.summary),
-      link: url,
+      link: advisoryLink(id),
       updated,
       published: date(e.published),
     });
@@ -76,6 +79,10 @@ export function parseFeed(xml: string): FeedEntry[] {
 }
 
 export function parseCsaf(raw: unknown, expectedId: string): Details {
+  jsonBytes(raw, CSAF_LIMITS.inputBytes);
+  const budget = new Budget();
+  const remedies = new Map<string, Remedy>();
+  const references = new Map<string, Map<string, RemedyReference>>();
   const root = obj(raw),
     document = obj(root.document),
     tracking = obj(document.tracking);
@@ -86,6 +93,7 @@ export function parseCsaf(raw: unknown, expectedId: string): Details {
   function visit(branches: unknown, parent = '', depth = 0): void {
     if (depth > 32) throw new Error('CSAF product tree too deep');
     for (const rawBranch of array(branches)) {
+      budget.step();
       const b = obj(rawBranch),
         p = obj(b.product),
         category = str(b.category);
@@ -129,62 +137,109 @@ export function parseCsaf(raw: unknown, expectedId: string): Details {
         remedies: [],
       });
   }
-  const groups = new Map(
-    array(tree.product_groups)
-      .map(obj)
-      .map((g) => [str(g.group_id), strings(g.product_ids)]),
-  );
+  if (products.size > 20000) throw new Error('CSAF document exceeds item limits');
+  for (const p of products.values()) {
+    budget.add(p);
+    references.set(p.id, new Map());
+  }
+  const groups = new Map<string, Set<string>>();
+  for (const value of array(tree.product_groups)) {
+    const group = obj(value);
+    const ids = strings(group.product_ids);
+    budget.step(ids.length + 1);
+    groups.set(str(group.group_id), new Set(ids));
+  }
   const scores: Score[] = [],
     cves = new Set<string>();
   const vulnerabilities = array(root.vulnerabilities);
   if (vulnerabilities.length > 20000 || products.size > 20000)
     throw new Error('CSAF document exceeds item limits');
   for (const rawVulnerability of vulnerabilities) {
+    budget.step();
     const v = obj(rawVulnerability),
       cve = str(v.cve);
     if (cve) cves.add(cve);
     for (const [status, ids] of Object.entries(obj(v.product_status)))
       for (const id of strings(ids)) {
+        budget.step();
         const p = products.get(id);
         if (p) {
-          if (!p.status.includes(status)) p.status.push(status);
-          if (cve && !p.cves.includes(cve)) p.cves.push(cve);
+          if (!p.status.includes(status)) {
+            budget.add(status);
+            p.status.push(status);
+          }
+          if (cve && !p.cves.includes(cve)) {
+            budget.add(cve);
+            p.cves.push(cve);
+          }
         }
       }
-    for (const r of array(v.remediations).map(obj)) {
-      const ids = [
-        ...strings(r.product_ids),
-        ...strings(r.group_ids).flatMap((g) => groups.get(g) ?? []),
-      ];
-      // A remediation with no product scope applies to this vulnerability's affected products only.
+    for (const rawRemedy of array(v.remediations)) {
+      budget.step();
+      const r = obj(rawRemedy);
+      const textValue = typeof r.details === 'string' ? r.details : '';
+      if (Buffer.byteLength(textValue) > CSAF_LIMITS.textBytes)
+        throw new Error('CSAF remediation text budget exceeded');
+      const category = str(r.category),
+        text = sourceText(textValue),
+        url = safeLink(str(r.url));
+      const remedyId = hash([category, text, url]);
+      const targets = new Set<string>();
+      const direct = strings(r.product_ids),
+        groupIds = strings(r.group_ids);
+      budget.step(direct.length + groupIds.length);
       const hasScope = array(r.product_ids).length > 0 || array(r.group_ids).length > 0;
-      const targets = hasScope ? ids : strings(obj(v.product_status).known_affected);
+      for (const id of hasScope ? direct : strings(obj(v.product_status).known_affected)) {
+        budget.step();
+        targets.add(id);
+      }
+      for (const group of new Set(groupIds)) {
+        for (const id of groups.get(group) ?? []) {
+          budget.step();
+          targets.add(id);
+        }
+      }
       for (const id of targets) {
+        budget.step();
         const p = products.get(id);
         if (!p) continue;
-        const category = str(r.category),
-          text = sourceText(r.details),
-          url = safeLink(str(r.url));
-        const existing = p.remedies.find(
-          (x) => x.category === category && x.text === text && x.url === url,
-        );
+        if (!remedies.has(remedyId)) {
+          const definition = { id: remedyId, category, text, url };
+          budget.add(definition);
+          remedies.set(remedyId, definition);
+        }
+        const refs = references.get(id)!;
+        const existing = refs.get(remedyId);
         if (existing) {
-          if (cve && !existing.cves.includes(cve)) existing.cves.push(cve);
-        } else p.remedies.push({ category, text, url, cves: cve ? [cve] : [] });
+          if (cve && !existing.cves.includes(cve)) {
+            budget.add(cve);
+            existing.cves.push(cve);
+          }
+        } else {
+          budget.relation();
+          const ref = { remedyId, cves: cve ? [cve] : [] };
+          budget.add(ref);
+          refs.set(remedyId, ref);
+          p.remedies.push(ref);
+        }
       }
     }
     for (const s of array(v.scores).map(obj))
       for (const key of ['cvss_v3', 'cvss_v4', 'cvss_v2']) {
         const cvss = obj(s[key]),
           value = cvss.baseScore;
-        if (typeof value === 'number' && value >= 0 && value <= 10)
-          scores.push({
+        if (typeof value === 'number' && value >= 0 && value <= 10) {
+          const score: Score = {
             value,
             version:
               str(cvss.version) || (key === 'cvss_v4' ? '4.0' : key === 'cvss_v2' ? '2.0' : '3.1'),
             vector: str(cvss.vectorString),
             products: strings(s.products),
-          });
+          };
+          budget.step(score.products.length + 1);
+          budget.add(score);
+          scores.push(score);
+        }
       }
   }
   const notes = array(document.notes).map(obj);
@@ -193,7 +248,9 @@ export function parseCsaf(raw: unknown, expectedId: string): Details {
     .sort((a, b) => (date(b.date) ?? 0) - (date(a.date) ?? 0));
   const updated = date(tracking.current_release_date);
   if (!updated) throw new Error('CSAF missing current release date');
-  return {
+  const details: Details = {
+    schemaVersion: 2,
+    remedies: [...remedies.values()],
     title: sourceText(document.title),
     summary: sourceText(notes.find((n) => n.category === 'summary')?.text),
     published: date(tracking.initial_release_date),
@@ -205,4 +262,6 @@ export function parseCsaf(raw: unknown, expectedId: string): Details {
     scores,
     cves: [...cves],
   };
+  jsonBytes(details);
+  return details;
 }

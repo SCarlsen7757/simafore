@@ -49,7 +49,7 @@ test('failed enrichment retries after unchanged Atom and feed outages preserve c
     fetchCsaf: async () => {
       detailCalls++;
       if (detailCalls === 1) throw new Error('temporary');
-      return csaf();
+      return JSON.stringify(csaf());
     },
   });
   try {

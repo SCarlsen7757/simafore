@@ -44,6 +44,18 @@ export function createBoardServer(poller: Poller, settings: Config = config) {
         res.end();
         return;
       }
+      const type = assets[path];
+      if (type) {
+        const buffer = await readFile(
+          fileURLToPath(new URL('../../public' + path, import.meta.url)),
+        );
+        send(200, type, buffer);
+        return;
+      }
+      if (!['/tv', '/tv/', '/api/advisories', '/healthz'].includes(path)) {
+        send(404, 'text/plain', 'not found');
+        return;
+      }
       const strategy = url.searchParams.get('strategy');
       const viewRoute = ['/tv', '/tv/', '/api/advisories'].includes(path);
       if (viewRoute && strategy !== null && !isPriorityMode(strategy)) {
@@ -61,7 +73,11 @@ export function createBoardServer(poller: Poller, settings: Config = config) {
       const viewSettings = { ...settings, priorityMode };
       const snapshot = poller.snapshot(priorityMode);
       if (path === '/tv' || path === '/tv/') {
-        send(200, 'text/html; charset=utf-8', renderBoard(snapshot, viewSettings));
+        send(
+          200,
+          'text/html; charset=utf-8',
+          req.method === 'HEAD' ? '' : renderBoard(snapshot, viewSettings),
+        );
         return;
       }
       if (path === '/api/advisories') {
@@ -70,15 +86,18 @@ export function createBoardServer(poller: Poller, settings: Config = config) {
         send(
           200,
           'application/json',
-          JSON.stringify({
-            ...snapshot,
-            source: {
-              title: 'Siemens ProductCERT security advisories',
-              link: 'https://www.siemens.com/cert/advisories',
-            },
-            priorityMode,
-            items: snapshot.items.slice(0, limit),
-          }),
+          req.method === 'HEAD'
+            ? ''
+            : JSON.stringify({
+                ...snapshot,
+                schemaVersion: 2,
+                source: {
+                  title: 'Siemens ProductCERT security advisories',
+                  link: 'https://www.siemens.com/cert/advisories',
+                },
+                priorityMode,
+                items: snapshot.items.slice(0, limit),
+              }),
         );
         return;
       }
@@ -97,14 +116,6 @@ export function createBoardServer(poller: Poller, settings: Config = config) {
             upstreamCooldownUntil: snapshot.upstreamCooldownUntil,
           }),
         );
-        return;
-      }
-      const type = assets[path];
-      if (type) {
-        const buffer = await readFile(
-          fileURLToPath(new URL('../../public' + path, import.meta.url)),
-        );
-        send(200, type, buffer);
         return;
       }
       send(404, 'text/plain', 'not found');

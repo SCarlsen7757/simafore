@@ -1,3 +1,10 @@
+/** Primary advisory destinations never come from feed-supplied URLs. */
+export function advisoryLink(id: string): string {
+  return /^SSA-\d{6}$/.test(id)
+    ? `https://cert-portal.siemens.com/productcert/html/${id.toLowerCase()}.html`
+    : '';
+}
+
 /** Only absolute web links may cross the feed-to-browser boundary. */
 export function safeLink(value: string): string {
   if (

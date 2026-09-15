@@ -43,8 +43,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   if (env.POLL_ON_START !== undefined && !/^(true|false|1|0)$/i.test(env.POLL_ON_START))
     throw new Error('POLL_ON_START must be true or false');
   const feedUrl = env.FEED_URL || 'https://cert-portal.siemens.com/productcert/rss/advisories.atom';
-  if (!['http:', 'https:'].includes(new URL(feedUrl).protocol))
-    throw new Error('FEED_URL must use HTTP or HTTPS');
+  const source = new URL(feedUrl);
+  if (source.protocol !== 'https:' || source.username || source.password)
+    throw new Error('FEED_URL must use HTTPS without embedded credentials');
   const families = list(env.PRODUCT_FAMILIES ?? DEFAULT_FAMILIES);
   const keywords = list(env.PRODUCT_KEYWORDS ?? 'PROFINET,PROFIBUS,OPC UA');
   if ([...families, ...keywords].some((term) => !/[a-z0-9]/i.test(term)))
