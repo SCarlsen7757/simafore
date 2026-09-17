@@ -35,4 +35,11 @@ test('Retry-After supports seconds and dates; rate-limit and blocked pages trigg
     ),
     null,
   );
+  assert.equal(
+    cooldownError(
+      new Response('', { headers: { 'Content-Type': 'binary/octet-stream' } }),
+      '<feed xmlns="http://www.w3.org/2005/Atom"><entry><summary>Denial of service due to missing rate limiting on the login endpoint.</summary></entry></feed>',
+    ),
+    null,
+  );
 });

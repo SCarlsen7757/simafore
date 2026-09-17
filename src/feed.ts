@@ -30,7 +30,9 @@ export function cooldownError(
   now = Math.floor(Date.now() / 1000),
 ): UpstreamCooldownError | null {
   const hint = retryAfter(response.headers.get('retry-after'), now);
-  const html = /text\/html/i.test(response.headers.get('content-type') ?? '') || /^\s*</.test(body);
+  const html =
+    /text\/html/i.test(response.headers.get('content-type') ?? '') ||
+    /^\s*<(?:!doctype\s+html|html)\b/i.test(body);
   const blockedPage =
     html && /too many requests|made too? many requests|rate limit(?:ed| exceeded)/i.test(body);
   return response.status === 403 ||
